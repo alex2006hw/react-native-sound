@@ -3,26 +3,38 @@ package com.zmxv.RNSound;
 import android.media.MediaPlayer;
 import android.media.MediaPlayer.OnCompletionListener;
 import android.media.MediaPlayer.OnErrorListener;
+import android.media.AudioManager;
 import android.net.Uri;
+import android.content.res.AssetFileDescriptor;
+import android.util.Log;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
+import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.WritableMap;
+
+import com.android.vending.expansion.zipfile.APKExpansionSupport;
+import com.android.vending.expansion.zipfile.ZipResourceFile;
 
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.io.IOException;
+import java.util.Arrays;
 
-public class RNSoundModule extends ReactContextBaseJavaModule {
+public class RNSoundModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
   Map<Integer, MediaPlayer> playerPool = new HashMap<>();
   ReactApplicationContext context;
   final static Object NULL = null;
+  private static final String TAG = "RNSoundModule";
 
   public RNSoundModule(ReactApplicationContext context) {
     super(context);
+    context.addLifecycleEventListener(this);
     this.context = context;
   }
 
@@ -43,7 +55,13 @@ public class RNSoundModule extends ReactContextBaseJavaModule {
     }
     try {
       player.prepare();
-    } catch (Exception e) {
+      } catch (Exception exception) {
+         Log.e("RNSoundModule", "Exception", exception);
+         WritableMap e = Arguments.createMap();
+         e.putInt("code", -1);
+         e.putString("message", exception.getMessage());
+         callback.invoke(e);
+         return;
     }
     this.playerPool.put(key, player);
     WritableMap props = Arguments.createMap();
@@ -52,17 +70,70 @@ public class RNSoundModule extends ReactContextBaseJavaModule {
   }
 
   protected MediaPlayer createMediaPlayer(final String fileName) {
-    int res = this.context.getResources().getIdentifier(fileName, "raw", this.context.getPackageName());
-    if (res != 0) {
-      return MediaPlayer.create(this.context, res);
+    if(fileName.startsWith("exp://")) {
+      String[] path = fileName.split("//");
+      int expVer = Integer.parseInt(path[1]);
+      int expPatchVer = Integer.parseInt(path[2]);
+      String uri = path[3];
+      ZipResourceFile expansionFile = null;
+      AssetFileDescriptor fd = null;
+      MediaPlayer mPlayer = new MediaPlayer();
+      if(expVer>0) {
+          try {
+              expansionFile = APKExpansionSupport.getAPKExpansionZipFile(this.context, expVer, expPatchVer);
+              fd = expansionFile.getAssetFileDescriptor(uri);
+          } catch (IOException e) {
+              Log.e(TAG, Arrays.toString(e.getStackTrace()));
+              e.getStackTrace();
+          } catch (NullPointerException e) {
+              Log.e(TAG, Arrays.toString(e.getStackTrace()));
+              e.getStackTrace();
+          }
+      }
+      if(fd!=null) {
+        try {
+          mPlayer.setDataSource(fd.getFileDescriptor(), fd.getStartOffset(),fd.getLength());
+          mPlayer.prepare();
+        } catch (IOException e) {
+            Log.e(TAG, Arrays.toString(e.getStackTrace()));
+            e.getStackTrace();
+        } catch (NullPointerException e) {
+            Log.e(TAG, Arrays.toString(e.getStackTrace()));
+            e.getStackTrace();
+        }
+        try {
+          fd.close();
+        } catch (IOException e) {
+          Log.e(TAG, Arrays.toString(e.getStackTrace()));
+          e.getStackTrace();
+        }
+        return mPlayer;
+      }
+    } else {
+      int res = this.context.getResources().getIdentifier(fileName, "raw", this.context.getPackageName());
+      if (res != 0) {
+        return MediaPlayer.create(this.context, res);
+      }
+      if(fileName.startsWith("http://") || fileName.startsWith("https://")) {
+        MediaPlayer mediaPlayer = new MediaPlayer();
+        mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+        Log.i("RNSoundModule", fileName);
+        try {
+          mediaPlayer.setDataSource(fileName);
+        } catch(IOException e) {
+          Log.e("RNSoundModule", "Exception", e);
+          return null;
+        }
+        return mediaPlayer;
+      }
+
+      File file = new File(fileName);
+      if (file.exists()) {
+        Uri uri = Uri.fromFile(file);
+        return MediaPlayer.create(this.context, uri);
+      }
+      return null;
     }
-    File file = new File(fileName);
-    if (file.exists()) {
-      Uri uri = Uri.fromFile(file);
-      return MediaPlayer.create(this.context, uri);
-    }
-    return null;
-  }
 
   @ReactMethod
   public void play(final Integer key, final Callback callback) {
@@ -153,6 +224,21 @@ public class RNSoundModule extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void setSpeakerphoneOn(final Integer key, final Boolean speaker) {
+    MediaPlayer player = this.playerPool.get(key);
+    if (player != null) {
+      player.setAudioStreamType(AudioManager.STREAM_MUSIC);
+      AudioManager audioManager = (AudioManager)this.context.getSystemService(this.context.AUDIO_SERVICE);
+      audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+      if (speaker == true) {
+        audioManager.setSpeakerphoneOn(true);
+      } else {
+        audioManager.setSpeakerphoneOn(false);
+      }
+    }
+  }
+
+  @ReactMethod
   public void enable(final Boolean enabled) {
     // no op
   }
@@ -163,4 +249,43 @@ public class RNSoundModule extends ReactContextBaseJavaModule {
     constants.put("IsAndroid", true);
     return constants;
   }
+
+  /**
+   * Ensure any audios that are playing when app exits are stopped and released
+   */
+  @Override
+  public void onCatalystInstanceDestroy() {
+    super.onCatalystInstanceDestroy();
+
+    Set<Map.Entry<Integer, MediaPlayer>> entries = playerPool.entrySet();
+    for (Map.Entry<Integer, MediaPlayer> entry : entries) {
+      MediaPlayer mp = entry.getValue();
+      if (mp == null) {
+        continue;
+      }
+      try {
+        mp.setOnCompletionListener(null);
+        mp.setOnPreparedListener(null);
+        mp.setOnErrorListener(null);
+        if (mp.isPlaying()) {
+          mp.stop();
+        }
+        mp.reset();
+        mp.release();
+      } catch (Exception ex) {
+        Log.e("RNSoundModule", "Exception when closing audios during app exit. ", ex);
+      }
+    }
+    entries.clear();
+  }
+
+  public void onHostDestroy() {
+      for (Map.Entry<Integer, MediaPlayer> entry : this.playerPool.entrySet()) {
+        release(entry.getKey());
+      }
+  }
+
+  public void onHostPause() {}
+
+  public void onHostResume() {}
 }

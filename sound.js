@@ -2,7 +2,6 @@
 
 var RNSound = require('react-native').NativeModules.RNSound;
 var IsAndroid = RNSound.IsAndroid;
-var IsWindows = RNSound.IsWindows;
 var resolveAssetSource = require("react-native/Libraries/Image/resolveAssetSource");
 var nextKey = 0;
 
@@ -11,15 +10,18 @@ function isRelativePath(path) {
 }
 
 function Sound(filename, basePath, onError) {
-  var asset = resolveAssetSource(filename);
-  if (asset) {
-    this._filename = asset.uri;
-    onError = basePath;
-  } else {
-    this._filename = basePath ? basePath + '/' + filename : filename;
+  this._filename = filename;
+  if(!filename.startsWith('exp://')) {
+    var asset = resolveAssetSource(filename);
+    if (asset) {
+      this._filename = asset.uri;
+      onError = basePath;
+    } else {
+      this._filename = basePath ? basePath + '/' + filename : filename;
 
-    if (IsAndroid && !basePath && isRelativePath(filename)) {
-      this._filename = filename.toLowerCase().replace(/\.[^.]+$/, '');
+      if (IsAndroid && !basePath && isRelativePath(filename)) {
+        this._filename = filename.toLowerCase().replace(/\.[^.]+$/, '');
+      }
     }
   }
 
@@ -30,7 +32,6 @@ function Sound(filename, basePath, onError) {
   this._volume = 1;
   this._pan = 0;
   this._numberOfLoops = 0;
-  this._speed = 1;
   RNSound.prepare(this._filename, this._key, (error, props) => {
     if (props) {
       if (typeof props.duration === 'number') {
@@ -54,8 +55,6 @@ Sound.prototype.isLoaded = function() {
 Sound.prototype.play = function(onEnd) {
   if (this._loaded) {
     RNSound.play(this._key, (successfully) => onEnd && onEnd(successfully));
-  } else {
-    onEnd && onEnd(false);
   }
   return this;
 };
@@ -96,7 +95,7 @@ Sound.prototype.getVolume = function() {
 Sound.prototype.setVolume = function(value) {
   this._volume = value;
   if (this._loaded) {
-    if (IsAndroid || IsWindows) {
+    if (IsAndroid) {
       RNSound.setVolume(this._key, value, value);
     } else {
       RNSound.setVolume(this._key, value);
@@ -123,20 +122,10 @@ Sound.prototype.getNumberOfLoops = function() {
 Sound.prototype.setNumberOfLoops = function(value) {
   this._numberOfLoops = value;
   if (this._loaded) {
-    if (IsAndroid || IsWindows) {
+    if (IsAndroid) {
       RNSound.setLooping(this._key, !!value);
     } else {
       RNSound.setNumberOfLoops(this._key, value);
-    }
-  }
-  return this;
-};
-
-Sound.prototype.setSpeed = function(value) {
-  this._setSpeed = value;
-  if (this._loaded) {
-    if (!IsAndroid && !IsWindows) {
-      RNSound.setSpeed(this._key, value);
     }
   }
   return this;
@@ -156,28 +145,23 @@ Sound.prototype.setCurrentTime = function(value) {
 };
 
 // ios only
-
-// This is deprecated.  Call the static one instead.
-
 Sound.prototype.setCategory = function(value) {
-  Sound.setCategory(value, false);
-}
+  RNSound.setCategory(this._key, value);
+};
 
 Sound.enable = function(enabled) {
   RNSound.enable(enabled);
 };
 
 Sound.enableInSilenceMode = function(enabled) {
-  if (!IsAndroid && !IsWindows) {
+  if (!IsAndroid) {
     RNSound.enableInSilenceMode(enabled);
   }
 };
 
-Sound.setCategory = function(value, mixWithOthers = false) {
-  if (!IsAndroid && !IsWindows) {
-    RNSound.setCategory(value, mixWithOthers);
-  }
-};
+if (!IsAndroid) {
+  Sound.enable(true);
+}
 
 Sound.MAIN_BUNDLE = RNSound.MainBundlePath;
 Sound.DOCUMENT = RNSound.NSDocumentDirectory;
